@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import './arena.css'
 import Sidebar from './Sidebar'
 import PlaylistCard from './PlaylistCard'
@@ -9,6 +9,7 @@ import ToastStack from './ToastStack'
 import RoundBanner from './RoundBanner'
 import { SimEngine } from './sim'
 import { AGENT_MAP, PAYOUT_PCT, POOL_SIZE, fmtMonShort, SCORE_EMOJI } from './data'
+import { CONTRACT_ADDRESS, client, ABI, readTreasury, readRoundInfo, readAllPlaylists } from './chain'
 import type { Playlist, Toast, ActivityEntry, RoundInfo, RoundStat, LastVerdict } from './types'
 
 let toastSeq = 0
@@ -34,82 +35,173 @@ export default function Arena({ onBack }: Props) {
   }
   const dismissToast = (id: number) => setToasts(prev => prev.filter(t => t.id !== id))
 
+  // Shared handlers — same shape whether fed by SimEngine or chain events
+  const handleSubmitted = useRef((pl: { playlistId: number; roleId: string; name: string; songIds: number[]; stake: bigint }) => {
+    const agent = AGENT_MAP.get(pl.roleId)
+    setPlaylists(prev =>
+      prev.find(p => p.playlistId === pl.playlistId) ? prev :
+      [...prev, {
+        id: pl.playlistId, playlistId: pl.playlistId, roleId: pl.roleId,
+        name: pl.name, songIds: pl.songIds, stake: pl.stake,
+        submittedAt: Date.now() / 1000, scored: false, score: 0,
+      }]
+    )
+    setRoundInfo(ri => ({ ...ri, submitted: ri.submitted + 1 }))
+    setActivity(prev => [...prev.slice(-120), {
+      id: ++actSeq, ts: Date.now(), event: 'submitted', playlistId: pl.playlistId,
+      roleId: pl.roleId, agentName: agent?.name, playlistName: pl.name,
+      songIds: pl.songIds, stake: pl.stake,
+    }])
+    addToast('info', '🎵', `${agent?.name} · "${pl.name}"`,
+      `${pl.songIds.length} songs · staked ${fmtMonShort(pl.stake)}`)
+  })
+
+  const handleScored = useRef((ev: {
+    playlistId: number; roleId: string; score: number
+    agentPayout: bigint; treasuryDelta: bigint; treasuryGained: boolean; treasury: bigint
+  }) => {
+    const { playlistId, roleId, score, agentPayout, treasuryDelta, treasuryGained, treasury: t } = ev
+    const pct   = PAYOUT_PCT[score - 1] ?? 0
+    const agent = AGENT_MAP.get(roleId)
+    let scoredPl: Playlist | null = null
+    setPlaylists(prev => prev.map(p => {
+      if (p.playlistId !== playlistId) return p
+      scoredPl = { ...p, scored: true, score, agentPayout, treasuryDelta, treasuryGained }
+      return scoredPl
+    }))
+    setTreasury(t)
+    setActivity(prev => [...prev.slice(-120), {
+      id: ++actSeq, ts: Date.now(), event: 'scored', playlistId,
+      roleId, agentName: agent?.name, score, agentPayout, treasuryDelta, treasuryGained,
+    }])
+    const kind = pct > 100 ? 'reward' : pct < 100 ? 'slash' : 'even'
+    setTimeout(() => setLastVerdict(lv =>
+      scoredPl ? {
+        playlistId, roleId, name: scoredPl!.name, songIds: scoredPl!.songIds,
+        score, kind, delta: pct - 100,
+      } : lv
+    ), 0)
+    const toastType = score >= 8 ? 'success' : score >= 6 ? 'info' : score === 5 ? 'warning' : 'error'
+    const msg = pct < 100 ? `${100 - pct}% slashed — got ${fmtMonShort(agentPayout)}`
+      : pct > 100 ? `+${pct - 100}% reward — got ${fmtMonShort(agentPayout)}` : 'Break even'
+    addToast(toastType, SCORE_EMOJI[score] ?? '🎵', `Playlist #${playlistId} scored ${score}/10`, msg)
+  })
+
+  const handleRoundComplete = useRef((ev: {
+    round: number; poolSize: number; totalScore: number; avgScore10x: number
+  }) => {
+    const { round, poolSize, avgScore10x } = ev
+    const avg = avgScore10x / 10
+    setRoundStats(prev => [...prev, { round, avgScore: avg }])
+    setRoundInfo(prev => ({ ...prev, round: round + 1, submitted: 0 }))
+    setActivity(prev => [...prev.slice(-120), {
+      id: ++actSeq, ts: Date.now(), event: 'roundComplete', playlistId: 0,
+      roleId: '', agentName: '', round, poolSize, totalScore: ev.totalScore, avgScore10x,
+    }])
+    setBanner({ round, poolSize, avgScore10x })
+    setTimeout(() => setBanner(b => (b?.round === round ? null : b)), 5200)
+    const emoji = avg >= 7 ? '🏆' : avg >= 5 ? '📊' : '📉'
+    addToast(avg >= 7 ? 'success' : avg >= 5 ? 'info' : 'warning', emoji,
+      `Round #${round} complete`, `${poolSize} playlists · avg ${avg.toFixed(1)}/10`)
+  })
+
+  // ── Simulation fallback (no contract address) ─────────────────────────────
   useEffect(() => {
+    if (CONTRACT_ADDRESS) return
     const sim = new SimEngine()
     sim.on({
       onTreasury: t => setTreasury(t),
-
-      onSubmitted: pl => {
-        const agent = AGENT_MAP.get(pl.roleId)
-        setPlaylists(prev =>
-          prev.find(p => p.playlistId === pl.playlistId)
-            ? prev
-            : [...prev, {
-                id: pl.playlistId, playlistId: pl.playlistId, roleId: pl.roleId,
-                name: pl.name, songIds: pl.songIds, stake: pl.stake,
-                submittedAt: Date.now() / 1000, scored: false, score: 0,
-              }]
-        )
-        setRoundInfo(ri => ({ ...ri, submitted: ri.submitted + 1 }))
-        setActivity(prev => [...prev.slice(-120), {
-          id: ++actSeq, ts: Date.now(), event: 'submitted', playlistId: pl.playlistId,
-          roleId: pl.roleId, agentName: agent?.name, playlistName: pl.name,
-          songIds: pl.songIds, stake: pl.stake,
-        }])
-        addToast('info', '🎵', `${agent?.name} · "${pl.name}"`,
-          `${pl.songIds.length} songs · staked ${fmtMonShort(pl.stake)}`)
-      },
-
-      onScored: ev => {
-        const { playlistId, roleId, score, agentPayout, treasuryDelta, treasuryGained, treasury: t } = ev
-        const pct   = PAYOUT_PCT[score - 1] ?? 0
-        const agent = AGENT_MAP.get(roleId)
-        let scoredPl: Playlist | null = null
-        setPlaylists(prev => prev.map(p => {
-          if (p.playlistId !== playlistId) return p
-          scoredPl = { ...p, scored: true, score, agentPayout, treasuryDelta, treasuryGained }
-          return scoredPl
-        }))
-        setTreasury(t)
-        setActivity(prev => [...prev.slice(-120), {
-          id: ++actSeq, ts: Date.now(), event: 'scored', playlistId,
-          roleId, agentName: agent?.name, score, agentPayout, treasuryDelta, treasuryGained,
-        }])
-        const kind = pct > 100 ? 'reward' : pct < 100 ? 'slash' : 'even'
-        setTimeout(() => setLastVerdict(lv =>
-          scoredPl ? {
-            playlistId, roleId, name: scoredPl!.name, songIds: scoredPl!.songIds,
-            score, kind, delta: pct - 100,
-          } : lv
-        ), 0)
-        const toastType = score >= 8 ? 'success' : score >= 6 ? 'info' : score === 5 ? 'warning' : 'error'
-        const msg = pct < 100
-          ? `${100 - pct}% slashed — got ${fmtMonShort(agentPayout)}`
-          : pct > 100
-          ? `+${pct - 100}% reward — got ${fmtMonShort(agentPayout)}`
-          : 'Break even'
-        addToast(toastType, SCORE_EMOJI[score] ?? '🎵', `Playlist #${playlistId} scored ${score}/10`, msg)
-      },
-
-      onRoundComplete: ev => {
-        const { round, poolSize, avgScore10x } = ev
-        const avg = avgScore10x / 10
-        setRoundStats(prev => [...prev, { round, avgScore: avg }])
-        setRoundInfo(prev => ({ ...prev, round: round + 1, submitted: 0 }))
-        setActivity(prev => [...prev.slice(-120), {
-          id: ++actSeq, ts: Date.now(), event: 'roundComplete', playlistId: 0,
-          roleId: '', agentName: '', round, poolSize, totalScore: ev.totalScore, avgScore10x,
-        }])
-        setBanner({ round, poolSize, avgScore10x })
-        setTimeout(() => setBanner(b => (b?.round === round ? null : b)), 5200)
-        const emoji = avg >= 7 ? '🏆' : avg >= 5 ? '📊' : '📉'
-        addToast(avg >= 7 ? 'success' : avg >= 5 ? 'info' : 'warning', emoji,
-          `Round #${round} complete`, `${poolSize} playlists · avg ${avg.toFixed(1)}/10`)
-      },
+      onSubmitted: pl => handleSubmitted.current({ ...pl, songIds: pl.songIds }),
+      onScored: ev => handleScored.current(ev),
+      onRoundComplete: ev => handleRoundComplete.current(ev),
     })
     sim.seed(6)
     sim.start()
     return () => sim.stop()
+  }, [])
+
+  // ── Real chain: bootstrap ─────────────────────────────────────────────────
+  useEffect(() => {
+    if (!CONTRACT_ADDRESS) return
+    const addr = CONTRACT_ADDRESS
+    Promise.all([
+      readAllPlaylists(addr),
+      readTreasury(addr),
+      readRoundInfo(addr),
+    ]).then(([pls, trs, ri]) => {
+      setPlaylists(pls)
+      setTreasury(trs)
+      setRoundInfo(ri)
+    }).catch(e => console.error('chain bootstrap:', e))
+  }, [])
+
+  // ── Real chain: poll treasury + round every 5s ────────────────────────────
+  useEffect(() => {
+    if (!CONTRACT_ADDRESS) return
+    const addr = CONTRACT_ADDRESS
+    const t = setInterval(async () => {
+      const [trs, ri] = await Promise.all([readTreasury(addr), readRoundInfo(addr)])
+      setTreasury(trs)
+      setRoundInfo(ri)
+    }, 5_000)
+    return () => clearInterval(t)
+  }, [])
+
+  // ── Real chain: watch PlaylistSubmitted ───────────────────────────────────
+  useEffect(() => {
+    if (!CONTRACT_ADDRESS) return
+    return client.watchContractEvent({
+      address: CONTRACT_ADDRESS, abi: ABI, eventName: 'PlaylistSubmitted',
+      onLogs: logs => {
+        for (const log of logs as any[]) {
+          const { playlistId, roleId, name, songIds, stake } = log.args
+          handleSubmitted.current({
+            playlistId: Number(playlistId), roleId, name,
+            songIds: (songIds as bigint[]).map(Number),
+            stake: BigInt(stake),
+          })
+        }
+      },
+    })
+  }, [])
+
+  // ── Real chain: watch PlaylistScored ─────────────────────────────────────
+  useEffect(() => {
+    if (!CONTRACT_ADDRESS) return
+    return client.watchContractEvent({
+      address: CONTRACT_ADDRESS, abi: ABI, eventName: 'PlaylistScored',
+      onLogs: logs => {
+        for (const log of logs as any[]) {
+          const { playlistId, roleId, score, agentPayout, treasuryDelta, treasuryGained } = log.args
+          // treasury is not in the event — we let the poll keep it fresh
+          handleScored.current({
+            playlistId: Number(playlistId), roleId,
+            score: Number(score),
+            agentPayout: BigInt(agentPayout),
+            treasuryDelta: BigInt(treasuryDelta),
+            treasuryGained: Boolean(treasuryGained),
+            treasury: 0n,
+          })
+        }
+      },
+    })
+  }, [])
+
+  // ── Real chain: watch RoundComplete ──────────────────────────────────────
+  useEffect(() => {
+    if (!CONTRACT_ADDRESS) return
+    return client.watchContractEvent({
+      address: CONTRACT_ADDRESS, abi: ABI, eventName: 'RoundComplete',
+      onLogs: logs => {
+        for (const log of logs as any[]) {
+          const { round, poolSize, totalScore, avgScore10x } = log.args
+          handleRoundComplete.current({
+            round: Number(round), poolSize: Number(poolSize),
+            totalScore: Number(totalScore), avgScore10x: Number(avgScore10x),
+          })
+        }
+      },
+    })
   }, [])
 
   const pending  = playlists.filter(p => !p.scored).length
