@@ -20,3 +20,6 @@ bin/
 contracts.db
 node_modules/
 playlist-ui/node_modules/
+
+# Local Netlify folder
+.netlify
