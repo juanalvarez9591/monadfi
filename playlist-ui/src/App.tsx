@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { client, ABI, fetchContractAddress, readAllPlaylists, readTreasury, readPendingCount, readRoundInfo, fmtMon } from './chain'
-import { fetchSongMap, fetchAgentMap } from './api'
+import { client, ABI, CONTRACT_ADDRESS, readAllPlaylists, readTreasury, readPendingCount, readRoundInfo, fmtMon } from './chain'
+import { fetchSongMap } from './api'
+import { buildAgentMap } from './agents'
 import type { Playlist, Song, Toast, ActivityEntry, AgentInfo, RoundStat } from './types'
 import ToastQueue from './components/ToastQueue'
 import PlaylistFeed from './components/PlaylistFeed'
@@ -16,20 +17,19 @@ let toastIdSeq = 0
 let activityIdSeq = 0
 
 export default function App() {
-  const [contractAddr, setContractAddr] = useState<`0x${string}` | null>(null)
-  const [error, setError]               = useState<string | null>(null)
-  const [songMap, setSongMap]           = useState<Map<number, Song>>(new Map())
-  const [agentMap, setAgentMap]         = useState<Map<string, AgentInfo>>(new Map())
-  const [playlists, setPlaylists]       = useState<Playlist[]>([])
-  const [treasury, setTreasury]         = useState<bigint>(0n)
-  const [pending, setPending]           = useState(0)
-  const [toasts, setToasts]             = useState<Toast[]>([])
-  const [activity, setActivity]         = useState<ActivityEntry[]>([])
-  const [tab, setTab]                   = useState<'playlists' | 'activity'>('playlists')
-  const [roundStats, setRoundStats]     = useState<RoundStat[]>([])
-  const [roundInfo, setRoundInfo]       = useState<{ round: number; submitted: number; poolSize: number }>({ round: 1, submitted: 0, poolSize: 15 })
+  const [error, setError]           = useState<string | null>(null)
+  const [songMap, setSongMap]       = useState<Map<number, Song>>(new Map())
+  const [agentMap, setAgentMap]     = useState<Map<string, AgentInfo>>(new Map())
+  const [playlists, setPlaylists]   = useState<Playlist[]>([])
+  const [treasury, setTreasury]     = useState<bigint>(0n)
+  const [pending, setPending]       = useState(0)
+  const [toasts, setToasts]         = useState<Toast[]>([])
+  const [activity, setActivity]     = useState<ActivityEntry[]>([])
+  const [tab, setTab]               = useState<'playlists' | 'activity'>('playlists')
+  const [roundStats, setRoundStats] = useState<RoundStat[]>([])
+  const [roundInfo, setRoundInfo]   = useState<{ round: number; submitted: number; poolSize: number }>({ round: 1, submitted: 0, poolSize: 15 })
+  const [ready, setReady]           = useState(false)
 
-  const addrRef    = useRef<`0x${string}` | null>(null)
   const agentMapRef = useRef<Map<string, AgentInfo>>(new Map())
 
   // ── Toast helpers ─────────────────────────────────────────────────────────
@@ -45,53 +45,55 @@ export default function App() {
   // ── Bootstrap ─────────────────────────────────────────────────────────────
 
   useEffect(() => {
+    if (!CONTRACT_ADDRESS) {
+      setError('VITE_CONTRACT_ADDRESS is not set — rebuild with CONTRACT_ADDRESS=0x... make build-ui')
+      return
+    }
+
+    // Agent map is static — no API call needed
+    const map = buildAgentMap()
+    agentMapRef.current = map
+    setAgentMap(map)
+
+    // Songs from static JSON — non-blocking, UI works without them
+    fetchSongMap().then(setSongMap).catch(e => console.warn('songs.json:', e.message))
+
+    // Chain reads
+    const addr = CONTRACT_ADDRESS
     Promise.all([
-      fetchContractAddress().then(addr => {
-        addrRef.current = addr
-        setContractAddr(addr)
-        return addr
-      }),
-      fetchSongMap().then(setSongMap),
-      fetchAgentMap().then(map => {
-        agentMapRef.current = map
-        setAgentMap(map)
-        return map
-      }),
+      readAllPlaylists(addr, map).then(setPlaylists),
+      readTreasury(addr).then(setTreasury),
+      readPendingCount(addr).then(setPending),
+      readRoundInfo(addr).then(setRoundInfo),
     ])
-    .then(([addr]) =>
-      Promise.all([
-        readAllPlaylists(addr, agentMapRef.current).then(setPlaylists),
-        readTreasury(addr).then(setTreasury),
-        readPendingCount(addr).then(setPending),
-        readRoundInfo(addr).then(setRoundInfo),
-      ])
-    )
+    .then(() => setReady(true))
     .catch(e => setError(e.message))
   }, [])
 
   // ── Poll treasury + pending every 5s ──────────────────────────────────────
 
   useEffect(() => {
-    if (!contractAddr) return
+    if (!ready || !CONTRACT_ADDRESS) return
+    const addr = CONTRACT_ADDRESS
     const t = setInterval(async () => {
       const [trs, pnd, ri] = await Promise.all([
-        readTreasury(contractAddr),
-        readPendingCount(contractAddr),
-        readRoundInfo(contractAddr),
+        readTreasury(addr),
+        readPendingCount(addr),
+        readRoundInfo(addr),
       ])
       setTreasury(trs)
       setPending(pnd)
       setRoundInfo(ri)
     }, 5000)
     return () => clearInterval(t)
-  }, [contractAddr])
+  }, [ready])
 
   // ── Watch PlaylistSubmitted ───────────────────────────────────────────────
 
   useEffect(() => {
-    if (!contractAddr) return
+    if (!CONTRACT_ADDRESS) return
     return client.watchContractEvent({
-      address: contractAddr,
+      address: CONTRACT_ADDRESS,
       abi: ABI,
       eventName: 'PlaylistSubmitted',
       onLogs: logs => {
@@ -102,7 +104,6 @@ export default function App() {
           const stakeB    = BigInt(stake)
           const agentName = agentMapRef.current.get(roleId)?.name ?? roleId
 
-          // Add to playlist list
           setPlaylists(prev => {
             if (prev.find(p => p.id === id)) return prev
             const pl: Playlist = {
@@ -112,14 +113,12 @@ export default function App() {
             return [...prev, pl]
           })
 
-          // Activity entry
           setActivity(prev => [...prev, {
             id: ++activityIdSeq, ts: Date.now(),
             event: 'submitted', playlistId: id,
             roleId, agentName, playlistName: name, songIds: songs, stake: stakeB,
           }])
 
-          // Toast
           addToast('info',
             `🎵 ${agentName} · "${name}"`,
             `${songs.length} songs · staked ${fmtMon(stakeB)}`
@@ -127,14 +126,14 @@ export default function App() {
         }
       },
     })
-  }, [contractAddr])
+  }, [])
 
   // ── Watch PlaylistScored ──────────────────────────────────────────────────
 
   useEffect(() => {
-    if (!contractAddr) return
+    if (!CONTRACT_ADDRESS) return
     return client.watchContractEvent({
-      address: contractAddr,
+      address: CONTRACT_ADDRESS,
       abi: ABI,
       eventName: 'PlaylistScored',
       onLogs: logs => {
@@ -147,14 +146,12 @@ export default function App() {
           const pct       = PAYOUT_PCT[scoreN - 1] ?? 0
           const agentName = agentMapRef.current.get(roleId)?.name ?? roleId
 
-          // Update playlist in list
           setPlaylists(prev => prev.map(p =>
             p.id === id
               ? { ...p, scored: true, score: scoreN, agentPayout: payout, treasuryDelta: tDelta, treasuryGained }
               : p
           ))
 
-          // Activity entry
           setActivity(prev => [...prev, {
             id: ++activityIdSeq, ts: Date.now(),
             event: 'scored', playlistId: id,
@@ -162,7 +159,6 @@ export default function App() {
             agentPayout: payout, treasuryDelta: tDelta, treasuryGained,
           }])
 
-          // Toast — type depends on outcome
           const toastType =
             scoreN >= 8 ? 'success' :
             scoreN >= 6 ? 'info' :
@@ -180,14 +176,14 @@ export default function App() {
         }
       },
     })
-  }, [contractAddr])
+  }, [])
 
   // ── Watch RoundComplete ───────────────────────────────────────────────────
 
   useEffect(() => {
-    if (!contractAddr) return
+    if (!CONTRACT_ADDRESS) return
     return client.watchContractEvent({
-      address: contractAddr,
+      address: CONTRACT_ADDRESS,
       abi: ABI,
       eventName: 'RoundComplete',
       onLogs: logs => {
@@ -217,7 +213,7 @@ export default function App() {
         }
       },
     })
-  }, [contractAddr])
+  }, [])
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -229,7 +225,7 @@ export default function App() {
     </div>
   )
 
-  if (!contractAddr) return (
+  if (!ready) return (
     <div className="min-h-screen flex items-center justify-center gap-3 text-base-content/60">
       <span className="loading loading-spinner loading-md" />
       Connecting to PlaylistBounty…
@@ -249,7 +245,7 @@ export default function App() {
         <div className="navbar-start gap-2">
           <span className="text-xl font-bold">🎵 PlaylistBounty</span>
           <span className="badge badge-outline badge-sm font-mono hidden sm:flex">
-            {contractAddr.slice(0, 8)}…{contractAddr.slice(-4)}
+            {CONTRACT_ADDRESS.slice(0, 8)}…{CONTRACT_ADDRESS.slice(-4)}
           </span>
         </div>
 
@@ -310,7 +306,6 @@ export default function App() {
       {/* ── Main ───────────────────────────────────────────────────── */}
       <main className="flex-1 flex gap-4 p-4 overflow-hidden">
 
-        {/* Playlist feed */}
         <section className={`flex-1 overflow-y-auto lg:block ${tab === 'playlists' ? 'block' : 'hidden'}`}>
           <h2 className="text-sm font-semibold text-base-content/60 uppercase tracking-wider mb-3">
             Playlists
@@ -318,10 +313,8 @@ export default function App() {
           <PlaylistFeed playlists={playlists} songMap={songMap} />
         </section>
 
-        {/* Divider */}
         <div className="divider divider-horizontal hidden lg:flex" />
 
-        {/* Activity feed */}
         <section className={`w-full lg:w-80 xl:w-96 flex-shrink-0 lg:block ${tab === 'activity' ? 'block' : 'hidden'}`}>
           <h2 className="text-sm font-semibold text-base-content/60 uppercase tracking-wider mb-3">
             Live Events
@@ -331,7 +324,6 @@ export default function App() {
 
       </main>
 
-      {/* ── Toast queue ────────────────────────────────────────────── */}
       <ToastQueue toasts={toasts} onDismiss={dismissToast} />
 
     </div>

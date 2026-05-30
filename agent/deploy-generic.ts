@@ -2,12 +2,11 @@
  * deploy-generic.ts
  *
  * Deploy ANY Foundry-compiled contract to the running chain and record its
- * address. This is the contract-agnostic counterpart to deploy.ts (which knows
- * the MonadToken→CasinoRoulette dependency).
+ * address in deployments.json.
  *
  * Usage:
  *   npm run deploy:any -- <Contract> [constructorArgsJSON]
- *   npm run deploy:any -- MonadToken '["0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"]'
+ *   npm run deploy:any -- PlaylistBounty '[]'
  *
  * <Contract> is the Foundry artifact name (assumes file <Contract>.sol/<Contract>.json).
  * Writes the address to deployments.json under that name.

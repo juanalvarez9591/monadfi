@@ -17,7 +17,7 @@ import { formatEther, parseEventLogs } from 'viem'
 import { readFileSync, existsSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
-import { publicClient, getAnvilAccount, makeWalletClient } from './src/client.js'
+import { publicClient, getAnvilAccount, getDevAccount, makeWalletClient } from './src/client.js'
 import { runAgentOnce } from './src/execute.js'
 import { playlistBountyABI } from './src/contracts.js'
 
@@ -64,7 +64,7 @@ async function main() {
   const dep  = loadPlaylistDeployments()
   if (!dep.PlaylistBounty) throw new Error('PlaylistBounty not deployed')
 
-  const wallet       = getAnvilAccount(WALLET_INDEX)
+  const wallet       = process.env.PRIVATE_KEY ? getDevAccount() : getAnvilAccount(WALLET_INDEX)
   const walletClient = makeWalletClient(wallet)
   const contractAddr = dep.PlaylistBounty as `0x${string}`
 

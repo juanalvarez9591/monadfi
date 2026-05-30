@@ -5,7 +5,7 @@ import type { Abi, Hex, Address } from 'viem'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const OUT_DIR = join(__dirname, '../../out')
-const DEPLOYMENTS_PATH = join(__dirname, '../deployments.json')
+const DEPLOYMENTS_PATH = join(__dirname, '../playlist-deployments.json')
 
 // ── ABI + bytecode loading ────────────────────────────────────────────────────
 
@@ -19,15 +19,7 @@ function loadArtifact(solidityFile: string, contractName: string) {
   return JSON.parse(readFileSync(path, 'utf-8'))
 }
 
-const tokenArtifact    = loadArtifact('MonadToken', 'MonadToken')
-const casinoArtifact   = loadArtifact('CasinoRoulette', 'CasinoRoulette')
 const playlistArtifact = loadArtifact('PlaylistBounty', 'PlaylistBounty')
-
-export const monadTokenABI:        Abi = tokenArtifact.abi
-export const monadTokenBytecode:   Hex = tokenArtifact.bytecode.object
-
-export const casinoRouletteABI:       Abi = casinoArtifact.abi
-export const casinoRouletteBytecode:  Hex = casinoArtifact.bytecode.object
 
 export const playlistBountyABI:       Abi = playlistArtifact.abi
 export const playlistBountyBytecode:  Hex = playlistArtifact.bytecode.object
@@ -35,16 +27,14 @@ export const playlistBountyBytecode:  Hex = playlistArtifact.bytecode.object
 // ── Deployment registry ───────────────────────────────────────────────────────
 
 export interface Deployments {
-  MonadToken:       Address
-  CasinoRoulette:   Address
-  PlaylistBounty?:  Address
-  chainId:          number
-  deployedAt:       string
+  PlaylistBounty:  Address
+  chainId:         number
+  deployedAt:      string
 }
 
 export function loadDeployments(): Deployments {
   if (!existsSync(DEPLOYMENTS_PATH)) {
-    throw new Error('deployments.json not found — run: npm run deploy')
+    throw new Error('playlist-deployments.json not found — run: npm run deploy:playlist')
   }
   return JSON.parse(readFileSync(DEPLOYMENTS_PATH, 'utf-8'))
 }

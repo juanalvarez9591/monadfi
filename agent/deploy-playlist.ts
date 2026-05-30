@@ -14,7 +14,7 @@ import { parseEther } from 'viem'
 import { writeFileSync, existsSync, readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
-import { publicClient, getAnvilAccount, makeWalletClient } from './src/client.js'
+import { publicClient, getAnvilAccount, getDevAccount, makeWalletClient } from './src/client.js'
 import { playlistBountyABI, playlistBountyBytecode } from './src/contracts.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -32,7 +32,7 @@ const TREASURY_SEED = parseEther('1')
 
 async function main() {
   const chain    = await publicClient.getChainId()
-  const deployer = getAnvilAccount(0)
+  const deployer = process.env.PRIVATE_KEY ? getDevAccount() : getAnvilAccount(0)
   const wallet   = makeWalletClient(deployer)
 
   console.log(`Chain ID  : ${chain}`)

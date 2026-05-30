@@ -13,14 +13,3 @@ export function getAgentWallet(index: number): HDAccount {
   return mnemonicToAccount(AGENT_MNEMONIC, { addressIndex: index })
 }
 
-/** Derive N agent wallets starting at index 0. */
-export function getAgentWallets(count: number): HDAccount[] {
-  return Array.from({ length: count }, (_, i) => getAgentWallet(i))
-}
-
-/** Pretty-print a wallet list (useful for debugging). */
-export function printWallets(wallets: HDAccount[]): void {
-  for (const [i, w] of wallets.entries()) {
-    console.log(`  [${i}] ${w.address}`)
-  }
-}

@@ -1,8 +1,8 @@
 /**
  * register.ts
  *
- * Reads deployments.json + ABIs from out/ and registers each contract
- * with the Go API so agents can discover them at runtime.
+ * Reads playlist-deployments.json + ABI from out/ and registers the contract
+ * with the Go API so agents can discover it at runtime.
  *
  * Usage:
  *   npm run register
@@ -13,11 +13,8 @@ import { loadDeployments, loadContract } from './src/contracts.js'
 
 const API_URL = process.env.API_URL ?? 'http://localhost:8080'
 
-// Maps the key in deployments.json → { solidityFile, contractName }
-// Add new contracts here when you deploy more.
 const ARTIFACT_MAP: Record<string, { file: string; contract: string }> = {
-  MonadToken:     { file: 'MonadToken',     contract: 'MonadToken'     },
-  CasinoRoulette: { file: 'CasinoRoulette', contract: 'CasinoRoulette' },
+  PlaylistBounty: { file: 'PlaylistBounty', contract: 'PlaylistBounty' },
 }
 
 async function main() {

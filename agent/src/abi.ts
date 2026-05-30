@@ -2,7 +2,7 @@
  * abi.ts
  *
  * Generic ABI introspection so the agent execution schema can be derived for ANY
- * contract — not just CasinoRoulette. Used by autoregister.ts.
+ * contract. Used by autoregister.ts.
  *
  *   - statuses  = view/pure functions the agent reads (no-arg, or one address arg)
  *   - actions   = state-changing functions the agent can call, each with an

@@ -1,14 +1,42 @@
-import { createPublicClient, http, formatEther } from 'viem'
+import { createPublicClient, http, formatEther, defineChain } from 'viem'
 import { foundry } from 'viem/chains'
 import type { Playlist } from './types'
 
-export const client = createPublicClient({
-  chain: foundry,
-  transport: http('http://localhost:8545'),
-  pollingInterval: 1_000,
+// ── Monad testnet chain definition ────────────────────────────────────────────
+
+const monadTestnet = defineChain({
+  id: 10143,
+  name: 'Monad Testnet',
+  nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 },
+  rpcUrls: {
+    default: { http: ['https://testnet-rpc.monad.xyz'] },
+  },
+  blockExplorers: {
+    default: { name: 'MonadExplorer', url: 'https://testnet.monadexplorer.com' },
+  },
 })
 
-// Minimal ABI — events + views we actually use
+// ── Runtime config (set as env vars at build time) ────────────────────────────
+
+const RPC_URL: string =
+  import.meta.env.VITE_RPC_URL ?? 'https://testnet-rpc.monad.xyz'
+
+// VITE_CONTRACT_ADDRESS must be set at build time (or in playlist-ui/.env for dev).
+export const CONTRACT_ADDRESS: `0x${string}` =
+  (import.meta.env.VITE_CONTRACT_ADDRESS ?? '') as `0x${string}`
+
+// Use foundry chain for local dev (localhost RPC), Monad testnet otherwise.
+const isLocal = RPC_URL.includes('localhost') || RPC_URL.includes('127.0.0.1')
+const chain = isLocal ? foundry : monadTestnet
+
+export const client = createPublicClient({
+  chain,
+  transport: http(RPC_URL),
+  pollingInterval: 2_000,
+})
+
+// ── Minimal ABI — events + views used by the frontend ─────────────────────────
+
 export const ABI = [
   {
     type: 'event',
@@ -31,6 +59,16 @@ export const ABI = [
       { name: 'agentPayout',   type: 'uint256', indexed: false },
       { name: 'treasuryDelta', type: 'uint256', indexed: false },
       { name: 'treasuryGained',type: 'bool',    indexed: false },
+    ],
+  },
+  {
+    type: 'event',
+    name: 'RoundComplete',
+    inputs: [
+      { name: 'round',       type: 'uint256', indexed: true  },
+      { name: 'poolSize',    type: 'uint256', indexed: false },
+      { name: 'totalScore',  type: 'uint256', indexed: false },
+      { name: 'avgScore10x', type: 'uint256', indexed: false },
     ],
   },
   {
@@ -58,16 +96,6 @@ export const ABI = [
     inputs: [], outputs: [{ type: 'uint256' }],
   },
   {
-    type: 'event',
-    name: 'RoundComplete',
-    inputs: [
-      { name: 'round',       type: 'uint256', indexed: true  },
-      { name: 'poolSize',    type: 'uint256', indexed: false },
-      { name: 'totalScore',  type: 'uint256', indexed: false },
-      { name: 'avgScore10x', type: 'uint256', indexed: false },
-    ],
-  },
-  {
     type: 'function', name: 'getPlaylist', stateMutability: 'view',
     inputs: [{ name: 'id', type: 'uint256' }],
     outputs: [
@@ -81,17 +109,6 @@ export const ABI = [
     ],
   },
 ] as const
-
-// ── Contract address from Go API ──────────────────────────────────────────────
-
-export async function fetchContractAddress(): Promise<`0x${string}`> {
-  const res = await fetch('/api/contracts')
-  if (!res.ok) throw new Error('API unreachable')
-  const contracts: any[] = await res.json()
-  const found = contracts.find((c: any) => c.name === 'PlaylistBounty')
-  if (!found) throw new Error('PlaylistBounty not registered in API — run: npm run setup:playlist')
-  return found.address as `0x${string}`
-}
 
 // ── Read helpers ──────────────────────────────────────────────────────────────
 
@@ -145,10 +162,14 @@ export async function readAllPlaylists(
   agentMap: Map<string, { name: string; roleId: string }>,
 ): Promise<Playlist[]> {
   const count = await readPlaylistCount(addr)
-  return Promise.all(Array.from({ length: count }, (_, i) => readPlaylist(addr, i, agentMap)))
+  const results: Playlist[] = []
+  // Fetch sequentially with a small delay to stay under the 15 req/s public RPC limit
+  for (let i = 0; i < count; i++) {
+    results.push(await readPlaylist(addr, i, agentMap))
+    if (i < count - 1) await new Promise(r => setTimeout(r, 100))
+  }
+  return results
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 export const fmtMon = (wei: bigint) =>
   `${parseFloat(formatEther(wei)).toFixed(4)} MON`

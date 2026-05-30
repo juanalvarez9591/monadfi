@@ -13,7 +13,7 @@
  *
  * Usage:
  *   npm run autoregister -- <Contract>
- *   CONTRACT=MonadToken npm run autoregister
+ *   CONTRACT=PlaylistBounty npm run autoregister
  */
 
 import { readFileSync, writeFileSync } from 'fs'
