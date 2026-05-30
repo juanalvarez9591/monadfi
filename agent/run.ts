@@ -120,14 +120,14 @@ async function main() {
   const action = agent.actions.find(a => a.functionName === decision.functionName)
   if (!action) throw new Error(`No registered action for: ${decision.functionName}`)
 
-  const args = await resolveArgs(action as any, wallet.address)
+  const resolved = await resolveArgs(action as any, wallet.address)
 
   console.log(`\n── Executing on-chain ───────────────────────────`)
-  console.log(`  ${action.functionName}(${args.map(String).join(', ')})`)
+  console.log(`  ${action.functionName}(${resolved.args.map(String).join(', ')})${resolved.value ? ` value=${resolved.value}` : ''}`)
   console.log(`  contract : ${action.contract.name} @ ${action.contract.address}`)
   console.log(`  caller   : ${wallet.address}`)
 
-  const result = await executeAction(action as any, args, walletClient, wallet)
+  const result = await executeAction(action as any, resolved, walletClient, wallet)
   console.log(`\n  ${result.status}: ${result.summary}`)
 }
 

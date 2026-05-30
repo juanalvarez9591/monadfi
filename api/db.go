@@ -56,6 +56,8 @@ func initDB(path string) (*DB, error) {
 		-- An agent has a prompt and a scoped set of statuses + actions.
 		CREATE TABLE IF NOT EXISTS agents (
 			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			name       TEXT    NOT NULL DEFAULT '',
+			role_id    TEXT    NOT NULL DEFAULT '',
 			prompt     TEXT    NOT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
@@ -71,7 +73,27 @@ func initDB(path string) (*DB, error) {
 			action_id INTEGER NOT NULL REFERENCES actions(id),
 			PRIMARY KEY (agent_id, action_id)
 		);
+
+		CREATE TABLE IF NOT EXISTS songs (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			name         TEXT    NOT NULL,
+			artist       TEXT    NOT NULL,
+			album        TEXT    NOT NULL DEFAULT '',
+			release_date TEXT    NOT NULL DEFAULT '', -- ISO: YYYY-MM-DD or YYYY
+			duration     INTEGER NOT NULL DEFAULT 0,  -- seconds
+			genre        TEXT    NOT NULL DEFAULT '',
+			image_url    TEXT    NOT NULL DEFAULT '',
+			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_songs_artist  ON songs(artist);
+		CREATE INDEX IF NOT EXISTS idx_songs_genre   ON songs(genre);
+		CREATE INDEX IF NOT EXISTS idx_songs_album   ON songs(album);
+		CREATE INDEX IF NOT EXISTS idx_songs_release ON songs(release_date);
 	`)
+
+	// Migrate: add columns added after initial schema (safe to re-run).
+	db.Exec(`ALTER TABLE agents ADD COLUMN name    TEXT NOT NULL DEFAULT ''`)    //nolint:errcheck
+	db.Exec(`ALTER TABLE agents ADD COLUMN role_id TEXT NOT NULL DEFAULT ''`)    //nolint:errcheck
 
 	return &DB{db}, err
 }

@@ -65,6 +65,13 @@ func main() {
 	mux.HandleFunc("POST /agents/{id}/loop/tick",  h.loopTickHandler)
 	mux.HandleFunc("GET /loops",                   h.listLoopsHandler)
 
+	// Songs
+	mux.HandleFunc("POST /songs",           h.createSongsHandler)
+	mux.HandleFunc("GET /songs",            h.searchSongsHandler)
+	mux.HandleFunc("GET /songs/genres",     h.listGenresHandler)
+	mux.HandleFunc("GET /songs/albums",     h.listAlbumsHandler)
+	mux.HandleFunc("GET /songs/artists",    h.listArtistsHandler)
+
 	// Logs
 	mux.HandleFunc("GET /logs", h.listLogsHandler)
 

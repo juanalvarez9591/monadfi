@@ -11,6 +11,8 @@ import (
 
 type Agent struct {
 	ID        int64    `json:"id"`
+	Name      string   `json:"name"`
+	RoleID    string   `json:"roleId"`
 	Prompt    string   `json:"prompt"`
 	CreatedAt string   `json:"createdAt"`
 	Statuses  []Status `json:"statuses"`
@@ -19,14 +21,14 @@ type Agent struct {
 
 // ── DB methods ────────────────────────────────────────────────────────────────
 
-func (db *DB) createAgent(prompt string, statusIDs, actionIDs []int64) (Agent, error) {
+func (db *DB) createAgent(name, roleID, prompt string, statusIDs, actionIDs []int64) (Agent, error) {
 	tx, err := db.Begin()
 	if err != nil {
 		return Agent{}, err
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	res, err := tx.Exec(`INSERT INTO agents (prompt) VALUES (?)`, prompt)
+	res, err := tx.Exec(`INSERT INTO agents (name, role_id, prompt) VALUES (?, ?, ?)`, name, roleID, prompt)
 	if err != nil {
 		return Agent{}, err
 	}
@@ -59,8 +61,8 @@ func (db *DB) createAgent(prompt string, statusIDs, actionIDs []int64) (Agent, e
 func (db *DB) agentByID(id int64) (Agent, error) {
 	var a Agent
 	err := db.QueryRow(`
-		SELECT id, prompt, created_at FROM agents WHERE id = ?
-	`, id).Scan(&a.ID, &a.Prompt, &a.CreatedAt)
+		SELECT id, name, role_id, prompt, created_at FROM agents WHERE id = ?
+	`, id).Scan(&a.ID, &a.Name, &a.RoleID, &a.Prompt, &a.CreatedAt)
 	if err != nil {
 		return Agent{}, err
 	}
@@ -86,7 +88,7 @@ func (db *DB) agentByID(id int64) (Agent, error) {
 }
 
 func (db *DB) listAgents() ([]Agent, error) {
-	rows, err := db.Query(`SELECT id, prompt, created_at FROM agents ORDER BY created_at DESC`)
+	rows, err := db.Query(`SELECT id, name, role_id, prompt, created_at FROM agents ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +97,7 @@ func (db *DB) listAgents() ([]Agent, error) {
 	var out []Agent
 	for rows.Next() {
 		var a Agent
-		if err := rows.Scan(&a.ID, &a.Prompt, &a.CreatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.RoleID, &a.Prompt, &a.CreatedAt); err != nil {
 			return nil, err
 		}
 		statuses, _ := db.statusesByAgentID(a.ID)
@@ -112,6 +114,8 @@ func (db *DB) listAgents() ([]Agent, error) {
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 type createAgentRequest struct {
+	Name      string  `json:"name"`
+	RoleID    string  `json:"roleId"`
 	Prompt    string  `json:"prompt"`
 	StatusIDs []int64 `json:"statusIds"`
 	ActionIDs []int64 `json:"actionIds"`
@@ -132,7 +136,7 @@ func (h *handler) createAgentHandler(w http.ResponseWriter, r *http.Request) {
 		errResponse(w, http.StatusBadRequest, "an agent must have at least one action")
 		return
 	}
-	a, err := h.db.createAgent(req.Prompt, req.StatusIDs, req.ActionIDs)
+	a, err := h.db.createAgent(req.Name, req.RoleID, req.Prompt, req.StatusIDs, req.ActionIDs)
 	if err != nil {
 		errResponse(w, http.StatusInternalServerError, err.Error())
 		return
@@ -179,7 +183,7 @@ func (h *handler) duplicateAgentHandler(w http.ResponseWriter, r *http.Request) 
 	for i, a := range orig.Actions {
 		actionIDs[i] = a.ID
 	}
-	copy, err := h.db.createAgent(orig.Prompt+" (copy)", statusIDs, actionIDs)
+	copy, err := h.db.createAgent(orig.Name+" (copy)", orig.RoleID, orig.Prompt+" (copy)", statusIDs, actionIDs)
 	if err != nil {
 		errResponse(w, http.StatusInternalServerError, err.Error())
 		return

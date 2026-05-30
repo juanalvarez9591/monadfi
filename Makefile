@@ -1,11 +1,14 @@
-BIN          := bin/monad-api
-API_URL      := http://localhost:8080
-API_PORT     := 8080
-ANVIL_PORT   := 8545
-UI_PORT      := 5173
-DAPP_PORT    := 5174
-N_PLAYERS    ?= 2                # number of parallel player agents to spawn
-OLLAMA_MODEL ?= qwen3:1.7b       # tool/enum-reliable model; qwen3:0.6b is faster, less accurate
+BIN            := bin/monad-api
+API_URL        := http://localhost:8080
+API_PORT       := 8080
+ANVIL_PORT     := 8545
+UI_PORT        := 5173
+DAPP_PORT      := 5174
+N_PLAYERS      ?= 2    # parallel player agents for the casino use-case
+N_AGENTS       ?= 3    # agent curators for PlaylistBounty
+AGENT_INTERVAL ?= 5    # seconds between agent submissions
+ORACLE_INTERVAL?= 10   # seconds between oracle scoring ticks
+OLLAMA_MODEL   ?= qwen3:1.7b
 
 # Generic deploy knobs — `make deploy-any CONTRACT=Foo ARGS='["0x.."]'`
 CONTRACT ?=
@@ -14,20 +17,91 @@ ARGS     ?= []
 export OLLAMA_MODEL
 
 .PHONY: all anvil api ui dapp deploy fund loops stop clean test test-sol test-go \
-        functional deploy-any autoregister
+        functional deploy-any autoregister forge-build \
+        deploy-playlist setup-playlist loops-playlist playlist \
+        playlist-ui playlist-ui-install
 
-# ── Full bootstrap (clean slate → everything running) ─────────────────────────
-all: clean anvil api deploy fund ui dapp loops
+# ── PlaylistBounty: full bootstrap (default) ──────────────────────────────────
+all: clean anvil api forge-build deploy-playlist loops-playlist playlist-ui-install playlist-ui
 	@echo ""
-	@echo "Everything is running."
-	@echo "  Admin UI  → http://localhost:$(UI_PORT)"
-	@echo "  Player UI → http://localhost:$(DAPP_PORT)  ← connect MetaMask here"
-	@echo "  API       → http://localhost:$(API_PORT)"
-	@echo "  Anvil     → http://localhost:$(ANVIL_PORT)"
+	@echo "PlaylistBounty is running."
+	@echo "  UI    → http://localhost:5175"
+	@echo "  API   → http://localhost:$(API_PORT)"
+	@echo "  Anvil → http://localhost:$(ANVIL_PORT)"
 	@echo ""
-	@echo "Loop logs:"
-	@echo "  tail -f /tmp/loop-house.log    (house agent $$(grep HOUSE_ID agent/.agent-ids | cut -d= -f2))"
-	@for i in $$(seq 0 $$(($(N_PLAYERS)-1))); do echo "  tail -f /tmp/loop-player-$$i.log  (player agent $$(grep PLAYER_ID agent/.agent-ids | cut -d= -f2), wallet $$i)"; done
+	@echo "Log tails:"
+	@echo "  tail -f /tmp/monad-api.log"
+	@echo "  tail -f /tmp/loop-oracle.log"
+	@for i in $$(seq 1 $(N_AGENTS)); do echo "  tail -f /tmp/loop-agent-$$i.log"; done
+
+# ── Forge build ───────────────────────────────────────────────────────────────
+forge-build:
+	@echo "Compiling Solidity contracts..."
+	@forge build --silent
+	@echo "Contracts compiled"
+
+# ── PlaylistBounty deploy + setup ─────────────────────────────────────────────
+deploy-playlist: agent/node_modules forge-build
+	@echo "Deploying PlaylistBounty to anvil..."
+	@cd agent && npm run deploy:playlist
+	@echo "Registering contract, statuses, actions and agents (N_AGENTS=$(N_AGENTS))..."
+	@cd agent && API_URL=$(API_URL) N_AGENTS=$(N_AGENTS) npm run setup:playlist
+
+setup-playlist: agent/node_modules
+	@cd agent && API_URL=$(API_URL) N_AGENTS=$(N_AGENTS) npm run setup:playlist
+
+# ── PlaylistBounty agent loops ────────────────────────────────────────────────
+loops-playlist: agent/node_modules
+	@test -f agent/.playlist-agent-ids || { echo "Run 'make deploy-playlist' first"; exit 1; }
+	@echo "Starting oracle loop (interval=$(ORACLE_INTERVAL)s)..."
+	@ORACLE_ID=$$(grep '^ORACLE_ID=' agent/.playlist-agent-ids | cut -d= -f2); \
+	  (cd agent && LOOP_INTERVAL=$(ORACLE_INTERVAL) npm run loop:playlist -- $$ORACLE_ID 0 > /tmp/loop-oracle.log 2>&1) & \
+	  echo $$! > /tmp/loop-oracle.pid; \
+	  echo "  Oracle agent $$ORACLE_ID  →  /tmp/loop-oracle.log"
+	@i=1; while [ $$i -le $(N_AGENTS) ]; do \
+	  ID=$$(grep "^AGENT_$${i}_ID=" agent/.playlist-agent-ids | cut -d= -f2); \
+	  (cd agent && npm run loop:playlist -- $$ID 0 > /tmp/loop-agent-$$i.log 2>&1) & \
+	  echo $$! > /tmp/loop-agent-$$i.pid; \
+	  echo "  Agent $$i id=$$ID  →  /tmp/loop-agent-$$i.log"; \
+	  i=$$((i+1)); \
+	done
+	@sleep 3
+	@echo "Activating loops via API..."
+	@ORACLE_ID=$$(grep '^ORACLE_ID=' agent/.playlist-agent-ids | cut -d= -f2); \
+	  curl -sf -X POST $(API_URL)/agents/$$ORACLE_ID/loop/start \
+	    -H "Content-Type: application/json" \
+	    -d '{"interval":$(ORACLE_INTERVAL)}' > /dev/null && \
+	  echo "  Activated oracle_1 (agent $$ORACLE_ID)"
+	@i=1; while [ $$i -le $(N_AGENTS) ]; do \
+	  ID=$$(grep "^AGENT_$${i}_ID=" agent/.playlist-agent-ids | cut -d= -f2); \
+	  curl -sf -X POST $(API_URL)/agents/$$ID/loop/start \
+	    -H "Content-Type: application/json" \
+	    -d '{"interval":$(AGENT_INTERVAL)}' > /dev/null; \
+	  echo "  Activated agent_$$i (agent $$ID)"; \
+	  i=$$((i+1)); \
+	done
+	@echo "All loops started."
+
+# ── Playlist UI ───────────────────────────────────────────────────────────────
+PLAYLIST_UI_PORT := 5175
+
+playlist-ui/node_modules:
+	cd playlist-ui && npm install
+
+playlist-ui-install: playlist-ui/node_modules
+
+playlist-ui: playlist-ui/node_modules
+	@if lsof -ti:$(PLAYLIST_UI_PORT) > /dev/null 2>&1; then \
+		echo "Playlist UI already running on :$(PLAYLIST_UI_PORT)"; \
+	else \
+		echo "Starting Playlist UI..."; \
+		cd playlist-ui && npm run dev > /tmp/playlist-ui.log 2>&1 & \
+		sleep 3; \
+		echo "Playlist UI ready at http://localhost:$(PLAYLIST_UI_PORT)"; \
+	fi
+
+# Convenience alias: rebuild + redeploy + restart loops without full clean
+playlist: forge-build deploy-playlist loops-playlist
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 # Contract unit tests + Go API unit tests + the deterministic agent functional test.
@@ -158,7 +232,8 @@ stop:
 	@lsof -ti:$(ANVIL_PORT) | xargs kill 2>/dev/null && echo "Stopped anvil" || true
 	@lsof -ti:$(API_PORT)   | xargs kill 2>/dev/null && echo "Stopped API"   || true
 	@lsof -ti:$(UI_PORT)    | xargs kill 2>/dev/null && echo "Stopped UI"    || true
-	@lsof -ti:$(DAPP_PORT)  | xargs kill 2>/dev/null && echo "Stopped dApp"  || true
+	@lsof -ti:$(DAPP_PORT)         | xargs kill 2>/dev/null && echo "Stopped dApp"        || true
+	@lsof -ti:$(PLAYLIST_UI_PORT) | xargs kill 2>/dev/null && echo "Stopped playlist UI" || true
 	@pkill -f "tsx loop.ts"  2>/dev/null && echo "Stopped loops" || true
 	@rm -f /tmp/loop-*.pid
 
@@ -166,5 +241,5 @@ stop:
 clean: stop
 	@rm -f $(BIN)
 	@rm -f contracts.db api/contracts.db
-	@rm -f agent/deployments.json agent/.agent-ids
+	@rm -f agent/deployments.json agent/playlist-deployments.json agent/.agent-ids agent/.playlist-agent-ids
 	@echo "Cleaned"

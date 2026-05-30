@@ -54,42 +54,116 @@ async function fullAbi(address: string, chainId: number): Promise<Abi> {
 /**
  * Resolve one template token to a concrete value for a parameter.
  * Supported tokens:
- *   self            → the calling wallet's address
- *   view:<fn>       → result of a no-arg view function on the same contract
- *   const:<value>   → a literal (coerced to the param's solidity type)
- *   random32        → a deterministic bytes32 (reproducible per wallet+contract)
- *   <anything else> → treated as a literal value
+ *   self               → the calling wallet's address
+ *   view:<fn>          → result of a no-arg view function on the same contract
+ *   const:<value>      → a literal; arrays are JSON-parsed (e.g. const:[1,2,3])
+ *   random32           → a deterministic bytes32 (reproducible per wallet+contract)
+ *   randInt:<min>:<max> → random integer in [min, max] inclusive
+ *   <anything else>    → treated as a literal value
  */
 async function resolveToken(token: string, inp: any, ctx: Ctx): Promise<unknown> {
   const t: string = inp.type
-  const coerce = (v: any) =>
-    t.startsWith('uint') || t.startsWith('int') ? BigInt(v) : v
+  const isIntType = (ty: string) => ty.startsWith('uint') || ty.startsWith('int')
+  const coerce = (v: any) => isIntType(t) ? BigInt(v) : v
 
   if (token === 'self') return ctx.caller
   if (token === 'random32') return keccak256(toHex(`${ctx.caller}:${ctx.address}`))
-  if (token.startsWith('const:')) return coerce(token.slice('const:'.length))
+
+  if (token.startsWith('randInt:')) {
+    const parts = token.split(':')
+    const min = parseInt(parts[1], 10)
+    const max = parseInt(parts[2], 10)
+    const val = Math.floor(Math.random() * (max - min + 1)) + min
+    return coerce(val)
+  }
+
+  if (token.startsWith('randItem:')) {
+    const raw  = token.slice('randItem:'.length)
+    const arr: any[] = JSON.parse(raw)
+    const item = arr[Math.floor(Math.random() * arr.length)]
+    return isIntType(t) ? BigInt(item) : String(item)
+  }
+
+  if (token.startsWith('const:')) {
+    const raw = token.slice('const:'.length)
+    // Array types: JSON-parse and coerce each element.
+    if (t.endsWith('[]')) {
+      const elemType = t.slice(0, -2)
+      const arr: any[] = JSON.parse(raw)
+      return arr.map((v) => isIntType(elemType) ? BigInt(v) : v)
+    }
+    return coerce(raw)
+  }
+
+  if (token.startsWith('api:')) {
+    // api:/songs?genre=Reggaeton&limit=10&extract=id
+    // Calls GET ${API_URL}<path>, parses JSON array, extracts the named field.
+    // Falls back to /songs?limit=<N> if the filtered query returns fewer than 3 results.
+    const raw     = token.slice('api:'.length)
+    const url     = new URL(raw, API_URL + '/')
+    const extract = url.searchParams.get('extract') ?? 'id'
+    const limit   = url.searchParams.get('limit') ?? '10'
+    url.searchParams.delete('extract')
+
+    const fetchItems = async (u: URL): Promise<any[]> => {
+      const res = await fetch(u.toString())
+      if (!res.ok) throw new Error(`api: fetch failed: ${u} → ${res.status}`)
+      const data = await res.json()
+      if (!Array.isArray(data)) throw new Error(`api: expected array from ${u}`)
+      return data
+    }
+
+    let data = await fetchItems(url)
+
+    // Fallback: genre/filter returned too few results — query without genre
+    if (data.length < 3) {
+      const fallback = new URL('/songs', API_URL + '/')
+      fallback.searchParams.set('limit', limit)
+      data = await fetchItems(fallback)
+    }
+
+    const elemType = t.endsWith('[]') ? t.slice(0, -2) : t
+    return data.map(item => isIntType(elemType) ? BigInt(item[extract]) : String(item[extract]))
+  }
+
   if (token.startsWith('view:')) {
     const fn = token.slice('view:'.length)
     return publicClient.readContract({ address: ctx.address, abi: ctx.abi, functionName: fn })
   }
+
   return coerce(token)
+}
+
+export interface ResolvedArgs {
+  args: unknown[]
+  value?: bigint // native MON/ETH to send with the tx (from _value template key)
 }
 
 /**
  * Build the ordered argument list for an action from its template.
- * Throws only if a required parameter has no template entry — that's a config
- * error worth surfacing, not a silent skip.
+ * The special key "_value" in the template is extracted as native value to
+ * send with the transaction (for payable functions) and not passed as an arg.
+ * Throws only if a required parameter has no template entry.
  */
-export async function resolveArgs(action: ActionDef, caller: `0x${string}`): Promise<unknown[]> {
+export async function resolveArgs(action: ActionDef, caller: `0x${string}`): Promise<ResolvedArgs> {
   const inputs: any[] = action.functionAbi.inputs ?? []
-  if (inputs.length === 0) return []
-
   const template = action.argsTemplate ?? {}
   const ctx: Ctx = {
     caller,
     address: action.contract.address as `0x${string}`,
     abi: await fullAbi(action.contract.address, action.contract.chainId),
   }
+
+  // Extract optional native value (_value is not a Solidity parameter).
+  let value: bigint | undefined
+  if (template['_value']) {
+    const raw = template['_value'].startsWith('const:')
+      ? template['_value'].slice('const:'.length)
+      : template['_value']
+    value = BigInt(raw)
+  }
+
+  if (inputs.length === 0) return { args: [], value }
 
   const args: unknown[] = []
   for (const inp of inputs) {
@@ -101,7 +175,7 @@ export async function resolveArgs(action: ActionDef, caller: `0x${string}`): Pro
     }
     args.push(await resolveToken(token, inp, ctx))
   }
-  return args
+  return { args, value }
 }
 
 // ── Simulate-before-send ───────────────────────────────────────────────────--
@@ -109,22 +183,24 @@ export async function resolveArgs(action: ActionDef, caller: `0x${string}`): Pro
 export interface ExecResult {
   status: 'sent' | 'skipped' | 'reverted'
   summary: string
+  receipt?: import('viem').TransactionReceipt
 }
 
 /**
  * Simulate the action; broadcast only if it would succeed. A simulated revert
  * (wrong action for the current state) is reported as "skipped" — never thrown —
- * so the agent loop keeps running.
+ * so the agent loop keeps running. Pass `value` for payable functions.
  */
 export async function executeAction(
   action: ActionDef,
-  args: unknown[],
+  resolved: ResolvedArgs,
   walletClient: any,
   account: any,
 ): Promise<ExecResult> {
   const address = action.contract.address as `0x${string}`
   const abi = [action.functionAbi] as Abi
-  const label = `${action.functionName}(${args.map(String).join(',')})`
+  const { args, value } = resolved
+  const label = `${action.functionName}(${args.map(String).join(',')})${value ? ` value=${value}` : ''}`
 
   let request
   try {
@@ -134,16 +210,17 @@ export async function executeAction(
       functionName: action.functionName,
       args: args as any,
       account,
+      ...(value !== undefined ? { value } : {}),
     })
     request = sim.request
   } catch (err: any) {
     return { status: 'skipped', summary: `${label} would revert → skipped (${shortReason(err)})` }
   }
 
-  const hash = await walletClient.writeContract(request)
+  const hash    = await walletClient.writeContract(request)
   const receipt = await publicClient.waitForTransactionReceipt({ hash })
-  const status = receipt.status === 'success' ? 'sent' : 'reverted'
-  return { status, summary: `${label} tx=${hash.slice(0, 10)}… block=${receipt.blockNumber} ${receipt.status}` }
+  const status  = receipt.status === 'success' ? 'sent' : 'reverted'
+  return { status, summary: `${label} tx=${hash.slice(0, 10)}… block=${receipt.blockNumber} ${receipt.status}`, receipt }
 }
 
 function shortReason(err: any): string {
@@ -191,6 +268,7 @@ export interface RunOutcome {
   status: 'no-op' | 'sent' | 'skipped' | 'reverted'
   summary: string
   reasoning?: string
+  receipt?: import('viem').TransactionReceipt
 }
 
 /**
@@ -225,7 +303,7 @@ export async function runAgentOnce(
   const action = agent.actions.find((a) => a.functionName === decision.functionName)
   if (!action) return { action: decision.functionName, status: 'skipped', summary: `unknown action ${decision.functionName}` }
 
-  const args = await resolveArgs(action, wallet.address)
-  const result = await executeAction(action, args, walletClient, wallet)
-  return { action: action.functionName, status: result.status, summary: result.summary, reasoning: decision.reasoning }
+  const resolved = await resolveArgs(action, wallet.address)
+  const result   = await executeAction(action, resolved, walletClient, wallet)
+  return { action: action.functionName, status: result.status, summary: result.summary, reasoning: decision.reasoning, receipt: result.receipt }
 }

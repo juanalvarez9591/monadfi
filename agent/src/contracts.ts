@@ -19,8 +19,9 @@ function loadArtifact(solidityFile: string, contractName: string) {
   return JSON.parse(readFileSync(path, 'utf-8'))
 }
 
-const tokenArtifact   = loadArtifact('MonadToken', 'MonadToken')
-const casinoArtifact  = loadArtifact('CasinoRoulette', 'CasinoRoulette')
+const tokenArtifact    = loadArtifact('MonadToken', 'MonadToken')
+const casinoArtifact   = loadArtifact('CasinoRoulette', 'CasinoRoulette')
+const playlistArtifact = loadArtifact('PlaylistBounty', 'PlaylistBounty')
 
 export const monadTokenABI:        Abi = tokenArtifact.abi
 export const monadTokenBytecode:   Hex = tokenArtifact.bytecode.object
@@ -28,13 +29,17 @@ export const monadTokenBytecode:   Hex = tokenArtifact.bytecode.object
 export const casinoRouletteABI:       Abi = casinoArtifact.abi
 export const casinoRouletteBytecode:  Hex = casinoArtifact.bytecode.object
 
+export const playlistBountyABI:       Abi = playlistArtifact.abi
+export const playlistBountyBytecode:  Hex = playlistArtifact.bytecode.object
+
 // ── Deployment registry ───────────────────────────────────────────────────────
 
 export interface Deployments {
-  MonadToken:      Address
-  CasinoRoulette:  Address
-  chainId:         number
-  deployedAt:      string
+  MonadToken:       Address
+  CasinoRoulette:   Address
+  PlaylistBounty?:  Address
+  chainId:          number
+  deployedAt:       string
 }
 
 export function loadDeployments(): Deployments {

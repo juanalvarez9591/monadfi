@@ -18,3 +18,5 @@ bin/
 
 # Generated database
 contracts.db
+node_modules/
+playlist-ui/node_modules/
