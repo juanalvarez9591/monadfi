@@ -37,74 +37,17 @@ function loadPlaylistDeployments() {
 // ── Agent personalities ────────────────────────────────────────────────────────
 
 interface Personality {
-  name:          string    // display name shown in the frontend
-  roleId:        string    // contract role string (must start with "agent_")
-  genreFilter:   string    // ?genre= param for GET /songs
-  playlistNames: string[]  // creative names, one picked at random each tick
-  fallbackIds:   number[]  // used when not enough songs match the genre filter
+  name:   string   // display name shown in the frontend
+  roleId: string   // contract role string (must start with "agent_")
 }
 
 const PERSONALITIES: Personality[] = [
-  {
-    name:          'DJ Luna',
-    roleId:        'agent_1',
-    genreFilter:   'Reggaeton',
-    playlistNames: [
-      'Noches de Perreo', 'Reggaeton Sin Filtros', 'Barrio Hits Vol.1',
-      'Late Night Reggaeton', 'Flow Tropical', 'Perreo Intenso',
-    ],
-    fallbackIds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-  },
-  {
-    name:          'Trap Maestro',
-    roleId:        'agent_2',
-    genreFilter:   'Trap',
-    playlistNames: [
-      'Trap Season Vol.2', 'Hood Classics', 'Midnight Trap Session',
-      'Calle Profunda', 'Dark Mode On', 'Trap Para Los Reales',
-    ],
-    fallbackIds: [11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
-  },
-  {
-    name:          'Pop Princesa',
-    roleId:        'agent_3',
-    genreFilter:   'Pop',
-    playlistNames: [
-      'Summer Bops', 'Pop Hits Latam', 'Feel Good Friday',
-      'Guilty Pleasures', 'Vibes Solares', 'Pop Sin Fronteras',
-    ],
-    fallbackIds: [21, 22, 23, 24, 25, 26, 27, 28, 29, 30],
-  },
-  {
-    name:          'Cuartetero Pro',
-    roleId:        'agent_4',
-    genreFilter:   'Cuarteto',
-    playlistNames: [
-      'Fiesta de Barrio', 'Cuarteto Classics', 'Para Bailar Toda La Noche',
-      'Lo Mejor del Cuarteto', 'Cordobazo Musical', 'Che Cuarteto',
-    ],
-    fallbackIds: [31, 32, 33, 34, 35, 36, 37, 38, 39, 40],
-  },
-  {
-    name:          'Rock Señor',
-    roleId:        'agent_5',
-    genreFilter:   'Rock',
-    playlistNames: [
-      'Rock Nacional Eterno', 'Guitarras & Corazones', 'Clásicos del Rock Arg',
-      'Viejo Pero Bello', 'Headbang Criollo', 'Rock Sin Fronteras',
-    ],
-    fallbackIds: [41, 42, 43, 44, 45, 46, 47, 48, 49, 50],
-  },
-  {
-    name:          'Urbano King',
-    roleId:        'agent_6',
-    genreFilter:   'Urbano',
-    playlistNames: [
-      'Urbano Caliente', 'Street Level', 'El Bloque Suena',
-      'Desde la Villa', 'Sonido Urbano 24/7', 'Top Urbano Latam',
-    ],
-    fallbackIds: [1, 7, 15, 22, 30, 38, 47, 3, 6, 24],
-  },
+  { name: 'Mateo',  roleId: 'agent_1' },
+  { name: 'Sofia',  roleId: 'agent_2' },
+  { name: 'Lucas',  roleId: 'agent_3' },
+  { name: 'Emma',   roleId: 'agent_4' },
+  { name: 'Diego',  roleId: 'agent_5' },
+  { name: 'Vale',   roleId: 'agent_6' },
 ]
 
 // ── API helpers ───────────────────────────────────────────────────────────────
@@ -159,33 +102,34 @@ async function main() {
   const sRoundSubmitted = await mkStatus('roundSubmitted')
   console.log(`  [${sCanSubmit.id}] canSubmit  [${sCanScore.id}] canScore  [${sRoundSubmitted.id}] roundSubmitted`)
 
-  // ── 3. Preview songs per agent personality (informational only) ──────────
-  console.log('\n── Song query tokens per agent (resolved live each tick via api: token)…')
+  // ── 3. Preview song query (informational only) ────────────────────────────
+  console.log('\n── Song query per agent (resolved live each tick, name derived from first 2 songs)…')
   for (let i = 0; i < N_AGENTS; i++) {
     const p = PERSONALITIES[i % PERSONALITIES.length]
-    console.log(`  ${p.name} (${p.roleId}): GET /songs?genre=${encodeURIComponent(p.genreFilter)}&limit=10  (fresh each tick)`)
+    console.log(`  ${p.name} (${p.roleId}): GET /songs?limit=10  name = songTitle of first 2`)
   }
 
   // ── 4. Actions ────────────────────────────────────────────────────────────
   console.log('\n── Creating actions…')
   const submitActions: any[] = []
   for (let i = 0; i < N_AGENTS; i++) {
-    const p      = PERSONALITIES[i % PERSONALITIES.length]
-    // songIds resolved live every tick: GET /songs?genre=<X>&limit=10 → extract id field
-    const songToken = `api:/songs?genre=${encodeURIComponent(p.genreFilter)}&limit=10&extract=id`
+    const p = PERSONALITIES[i % PERSONALITIES.length]
+    // Both tokens share the same cached fetch — name and songIds come from the same request.
+    const songToken  = 'api:/songs?limit=10&extract=id'
+    const titleToken = 'songTitle:/songs?limit=10'
     const action = await post<any>('/actions', {
       contractId:   contract.id,
       functionName: 'submitPlaylist',
       functionAbi:  fragment('submitPlaylist', playlistBountyABI),
       argsTemplate: {
         roleId:  `const:${p.roleId}`,
-        name:    `randItem:${JSON.stringify(p.playlistNames)}`,
+        name:    titleToken,
         songIds: songToken,
         _value:  `const:${STAKE_WEI}`,
       },
     })
     submitActions.push(action)
-    console.log(`  [${action.id}] submitPlaylist  ${p.name} (${p.roleId})  songs=${songToken}`)
+    console.log(`  [${action.id}] submitPlaylist  ${p.name} (${p.roleId})`)
   }
 
   const scoreAction = await post<any>('/actions', {
@@ -208,7 +152,7 @@ async function main() {
     const agent = await post<any>('/agents', {
       name:      p.name,
       roleId:    p.roleId,
-      prompt:    `You are ${p.name} (${p.roleId}), a ${p.genreFilter} playlist curator on PlaylistBounty.
+      prompt:    `You are ${p.name} (${p.roleId}), a music curator on PlaylistBounty.
 Each round has a pool of ${15} submissions. You compete against other curators for the highest oracle score.
 Task: If canSubmit=true → call submitPlaylist to add your playlist to the pool.
       If canSubmit=false → wait (pool is full, oracle is scoring this round).`,
@@ -246,7 +190,7 @@ Done.
   Agents    : ${agentIds.map((id, i) => `${PERSONALITIES[i % PERSONALITIES.length].name}=${id}`).join('  ')}
   Oracle    : oracle_1=${oracleAgent.id}
   Stake/tx  : ${Number(STAKE_WEI) / 1e18} MON
-  Song query: GET /songs?genre=<X>&limit=10  (resolved live each tick via api: token)
+  Song query: GET /songs?limit=10  (name = Artist1 & Artist2, songIds from same fetch)
 `)
   console.log('Saved → .playlist-agent-ids')
 }

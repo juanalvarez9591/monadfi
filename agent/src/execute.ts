@@ -30,7 +30,7 @@ export interface ActionDef {
   argsTemplate?: Record<string, string>
 }
 
-type Ctx = { caller: `0x${string}`; address: `0x${string}`; abi: Abi }
+type Ctx = { caller: `0x${string}`; address: `0x${string}`; abi: Abi; fetchCache: Map<string, any[]> }
 
 // ── Full-ABI cache (for resolving `view:` tokens against the whole contract) ────
 
@@ -96,9 +96,10 @@ async function resolveToken(token: string, inp: any, ctx: Ctx): Promise<unknown>
   }
 
   if (token.startsWith('api:')) {
-    // api:/songs?genre=Reggaeton&limit=10&extract=id
+    // api:/songs?limit=10&extract=id
     // Calls GET ${API_URL}<path>, parses JSON array, extracts the named field.
     // Falls back to /songs?limit=<N> if the filtered query returns fewer than 3 results.
+    // Uses ctx.fetchCache so a songTitle: token for the same URL shares the same fetch.
     const raw     = token.slice('api:'.length)
     const url     = new URL(raw, API_URL + '/')
     const extract = url.searchParams.get('extract') ?? 'id'
@@ -106,16 +107,19 @@ async function resolveToken(token: string, inp: any, ctx: Ctx): Promise<unknown>
     url.searchParams.delete('extract')
 
     const fetchItems = async (u: URL): Promise<any[]> => {
-      const res = await fetch(u.toString())
-      if (!res.ok) throw new Error(`api: fetch failed: ${u} → ${res.status}`)
+      const key = u.toString()
+      if (ctx.fetchCache.has(key)) return ctx.fetchCache.get(key)!
+      const res = await fetch(key)
+      if (!res.ok) throw new Error(`api: fetch failed: ${key} → ${res.status}`)
       const data = await res.json()
-      if (!Array.isArray(data)) throw new Error(`api: expected array from ${u}`)
+      if (!Array.isArray(data)) throw new Error(`api: expected array from ${key}`)
+      ctx.fetchCache.set(key, data)
       return data
     }
 
     let data = await fetchItems(url)
 
-    // Fallback: genre/filter returned too few results — query without genre
+    // Fallback: filter returned too few results — query without filter
     if (data.length < 3) {
       const fallback = new URL('/songs', API_URL + '/')
       fallback.searchParams.set('limit', limit)
@@ -124,6 +128,37 @@ async function resolveToken(token: string, inp: any, ctx: Ctx): Promise<unknown>
 
     const elemType = t.endsWith('[]') ? t.slice(0, -2) : t
     return data.map(item => isIntType(elemType) ? BigInt(item[extract]) : String(item[extract]))
+  }
+
+  if (token.startsWith('songTitle:')) {
+    // songTitle:/songs?limit=10
+    // Shares the fetch cache with api: tokens for the same URL so both name
+    // and songIds are derived from the same song objects in one request.
+    const raw   = token.slice('songTitle:'.length)
+    const url   = new URL(raw, API_URL + '/')
+    const limit = url.searchParams.get('limit') ?? '10'
+
+    const fetchItems = async (u: URL): Promise<any[]> => {
+      const key = u.toString()
+      if (ctx.fetchCache.has(key)) return ctx.fetchCache.get(key)!
+      const res = await fetch(key)
+      if (!res.ok) throw new Error(`songTitle: fetch failed: ${key} → ${res.status}`)
+      const data = await res.json()
+      if (!Array.isArray(data)) throw new Error(`songTitle: expected array from ${key}`)
+      ctx.fetchCache.set(key, data)
+      return data
+    }
+
+    let data = await fetchItems(url)
+    if (data.length < 2) {
+      const fallback = new URL('/songs', API_URL + '/')
+      fallback.searchParams.set('limit', limit)
+      data = await fetchItems(fallback)
+    }
+
+    const artistOf = (song: any): string =>
+      (song.artist as string | undefined)?.split(',')[0].trim() ?? song.name ?? '?'
+    return `${artistOf(data[0])} & ${artistOf(data[1])}`
   }
 
   if (token.startsWith('view:')) {
@@ -152,6 +187,7 @@ export async function resolveArgs(action: ActionDef, caller: `0x${string}`): Pro
     caller,
     address: action.contract.address as `0x${string}`,
     abi: await fullAbi(action.contract.address, action.contract.chainId),
+    fetchCache: new Map(),
   }
 
   // Extract optional native value (_value is not a Solidity parameter).

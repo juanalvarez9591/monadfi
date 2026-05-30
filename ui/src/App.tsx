@@ -4,6 +4,7 @@ import ActionsPage   from './pages/Actions'
 import StatusesPage  from './pages/Statuses'
 import AgentsPage    from './pages/Agents'
 import LogsPage      from './pages/Logs'
+import Arena         from './arena/Arena'
 
 const TABS = [
   { id: 'agents',    label: 'Agents' },
@@ -11,12 +12,17 @@ const TABS = [
   { id: 'actions',   label: 'Actions' },
   { id: 'statuses',  label: 'Statuses' },
   { id: 'logs',      label: 'Logs' },
+  { id: 'arena',     label: '◆ Arena' },
 ] as const
 
 type Tab = typeof TABS[number]['id']
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('agents')
+
+  if (tab === 'arena') {
+    return <Arena onBack={() => setTab('agents')} />
+  }
 
   return (
     <>
