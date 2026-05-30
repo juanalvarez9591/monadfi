@@ -1,0 +1,26 @@
+{
+  "name": "monad-agent",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "deploy":       "tsx deploy.ts",
+    "deploy:any":   "tsx deploy-generic.ts",
+    "autoregister": "tsx autoregister.ts",
+    "fund":         "tsx fund.ts",
+    "listen":       "tsx listen.ts",
+    "register":     "tsx register.ts",
+    "setup":        "tsx setup.ts",
+    "run":          "tsx run.ts",
+    "loop":         "tsx loop.ts",
+    "functional":   "tsx functional.ts",
+    "anvil":        "anvil"
+  },
+  "dependencies": {
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}
