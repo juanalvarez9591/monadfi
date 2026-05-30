@@ -12,7 +12,7 @@ const TABS = [
   { id: 'actions',   label: 'Actions' },
   { id: 'statuses',  label: 'Statuses' },
   { id: 'logs',      label: 'Logs' },
-  { id: 'arena',     label: '◆ Arena' },
+  { id: 'arena',     label: '◆ Monadfi' },
 ] as const
 
 type Tab = typeof TABS[number]['id']

@@ -55,7 +55,7 @@ export default function Sidebar({ playlists, treasury, view, setView, activityCo
     <aside className="sidebar">
       <div className="brand">
         <span className="brand-mark">◆</span>
-        <span className="brand-name">PlaylistBounty</span>
+        <span className="brand-name">Monadfi</span>
         <button className="brand-back" onClick={onBack} title="Back to dashboard">←</button>
       </div>
 
